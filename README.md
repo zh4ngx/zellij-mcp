@@ -1,162 +1,228 @@
 # zellij-mcp
 
-A small purpose-built [Model Context Protocol][mcp] server in Rust that wraps
-the [zellij][zellij] CLI for agent-driven multiplexer control. Exposes six
-pane-id-addressed tools so an LLM agent can spawn, drive, and clean up
-background panes without disturbing the user's focus.
+Reliable pane fabric for AI agents.
+
+`zellij-mcp` is a small Rust [Model Context Protocol][mcp] server that wraps
+the [zellij][zellij] CLI with six pane-id-addressed tools. It gives an agent the
+minimum surface needed to fan out work into terminal panes, read results, route
+follow-up input, and clean up without stealing the user's focus.
 
 [mcp]: https://modelcontextprotocol.io
 [zellij]: https://zellij.dev
 
 Designed and verified against **zellij 0.44.x** and **rmcp 1.5.x**.
 
-## Why another zellij MCP?
+## Why This Exists
 
-[`GitJuhb/zellij-mcp-server`][gitjuhb] (the breadth-first option, ~60 tools) and
-[`bnomei/tmux-mcp`][bnomei] (the only other Rust MCP for a multiplexer) were
-audited as candidates. Findings:
+Agent orchestration breaks when "the current pane" is treated as an API. If a
+human clicks elsewhere, or one background worker steals focus at the wrong time,
+the next write lands in the wrong terminal. That is enough to corrupt a run.
 
-- `GitJuhb/zellij-mcp-server` operates on **the focused pane** for every
-  mutation. There is no `pane_id` argument on `write-chars`, `dump-screen`, or
-  `close-pane`, and `list-panes --json` is not exposed at all. That is exactly
-  the wrong abstraction for an orchestrator that needs to drive *specific*
-  background panes.
-- `bnomei/tmux-mcp` has the right shape (every mutating tool requires
-  `pane_id`, `list-panes` returns typed JSON, output schemas everywhere) but
-  targets tmux and has fanned out to ~55 tools with a buffer subsystem, search
-  primitives, and a per-key dispatch surface.
+Existing multiplexer MCP experiments such as
+[`GitJuhb/zellij-mcp-server`][gitjuhb] and [`bnomei/tmux-mcp`][bnomei] show the
+right direction, but still leave gaps for zellij-native agent work: too many
+tools, focus-coupled commands, missing structured pane discovery, or no first
+class way to spawn a background pane while returning focus to the caller.
 
-This server picks up bnomei's discipline (mandatory `pane_id`, typed output,
-descriptive tool docstrings) and trims to the smallest set that lets an agent
-orchestrate panes for sub-agent work: **6 tools, ~470 LOC**.
+`zellij-mcp` is intentionally narrower:
+
+- **Pane ids are required** for every per-pane operation.
+- **No current-focus fallback** exists anywhere in the server.
+- **`keep_focus_on` is first class** on `spawn-pane`.
+- **Every tool returns structured JSON** with an MCP `outputSchema`.
+- **Only six tools** are exposed, because six is enough to build reliable pane
+  orchestration.
 
 [gitjuhb]: https://github.com/GitJuhb/zellij-mcp-server
 [bnomei]: https://github.com/bnomei/tmux-mcp
 
-## Tools
+## The Six Tools
 
-All tools accept an optional `session` argument; if omitted, zellij defaults to
-the session inherited from `$ZELLIJ_SESSION_NAME`.
+All tools accept optional `session`. If omitted, zellij uses the session from
+the inherited zellij environment.
 
-| Tool          | Required input                                      | Returns                                                        |
-| ------------- | --------------------------------------------------- | -------------------------------------------------------------- |
-| `list-panes`  | (none)                                              | `{ panes: [{id, title, is_focused, is_plugin, ...}] }`         |
-| `spawn-pane`  | `cwd`                                               | `{ pane_id }`                                                  |
-| `send-text`   | `pane_id`, `text`                                   | `{ ok }`                                                       |
-| `read-pane`   | `pane_id`                                           | `{ text }`                                                     |
-| `focus-pane`  | `pane_id`                                           | `{ ok }`                                                       |
-| `kill-pane`   | `pane_id`                                           | `{ ok }`                                                       |
+| Tool | Purpose | Required input | Output |
+| --- | --- | --- | --- |
+| `list-panes` | Discover panes as typed JSON | none | `{ panes: [...] }` |
+| `spawn-pane` | Create a split or floating pane | `cwd` | `{ pane_id }` |
+| `send-text` | Type into a specific pane | `pane_id`, `text` | `{ ok }` |
+| `read-pane` | Capture viewport or scrollback | `pane_id` | `{ text }` |
+| `focus-pane` | Move focus to a pane by id | `pane_id` | `{ ok }` |
+| `kill-pane` | Close a pane by id | `pane_id` | `{ ok }` |
 
-Optional inputs of note:
+Important options:
 
-- `spawn-pane`: `command` (argv), `direction` (`right|down|left|up`),
-  `floating: bool`, `name`, and **`keep_focus_on: pane_id`** — when set, the
-  server issues a follow-up `focus-pane-id` after spawning so a background
-  pane never steals focus.
-- `send-text`: `submit: bool` (default `false`) and
-  `newline_mode: "enter"|"shift_enter"`. With `submit: true, newline_mode: "enter"`
-  the server writes byte 13 (CR) to submit. With `newline_mode: "shift_enter"`
-  it writes byte 10 (LF) — useful for tools like Claude Code's prompt composer
-  that treat enter as submit and shift+enter as newline.
-- `read-pane`: `full: true` to include scrollback (default: viewport only).
+- `spawn-pane.command`: argv for the process to run.
+- `spawn-pane.direction`: `right`, `down`, `left`, or `up`.
+- `spawn-pane.floating`: open as a floating overlay.
+- `spawn-pane.keep_focus_on`: restore focus to this pane after spawn.
+- `send-text.submit`: send the text and then press enter.
+- `send-text.newline_mode`: `enter` sends byte 13; `shift_enter` sends byte 10.
+- `read-pane.full`: include full scrollback instead of only the viewport.
 
-Pane ids look like `terminal_3` or `plugin_1` — zellij's stable form. Bare
-integers are accepted by zellij as `terminal_<n>`.
+Pane ids are zellij's stable ids, usually `terminal_3` or `plugin_1`. Call
+`list-panes` first, keep the ids in your orchestration state, and address panes
+explicitly for the rest of the run.
 
-### A note on error surfacing
+## Quickstart
 
-`zellij action focus-pane-id` errors loudly when given a bogus id, but
-`write-chars`, `close-pane`, and `dump-screen` silently succeed (exit 0,
-empty output) for nonexistent ids — a zellij CLI quirk. This MCP forwards
-zellij's exit codes faithfully and **does not pre-validate** pane ids; do a
-`list-panes` first if your agent loop needs strict id checks.
-
-## Build
-
-Requires `cargo` 1.70+ and the `zellij` binary on PATH.
+Build the stdio MCP server:
 
 ```bash
+git clone https://github.com/zh4ngx/zellij-mcp.git
+cd zellij-mcp
 cargo build --release
-# binary lands at target/release/zellij-mcp
 ```
 
-On NixOS:
+The binary is `target/release/zellij-mcp`. Run your MCP client inside a zellij
+session, or pass `session` in tool calls when targeting a named session.
 
-```bash
-nix shell nixpkgs#cargo nixpkgs#rustc nixpkgs#gcc -c cargo build --release
-```
+The client snippets below follow the official [Claude Code MCP][claude-mcp] and
+[OpenCode MCP][opencode-mcp] local-server formats.
 
-## Wire into an MCP-aware agent
+[claude-mcp]: https://code.claude.com/docs/en/mcp
+[opencode-mcp]: https://opencode.ai/docs/mcp-servers
 
 ### Claude Code
 
-`~/.claude/mcp-config.json` (or via your settings template):
+Claude Code can add local stdio servers with `claude mcp add`:
+
+```bash
+claude mcp add --transport stdio --scope user zellij \
+  -- /absolute/path/to/zellij-mcp/target/release/zellij-mcp
+claude mcp list
+```
+
+Project-scoped `.mcp.json` works too:
 
 ```json
 {
   "mcpServers": {
     "zellij": {
-      "command": "/home/you/dev/zellij-mcp/target/release/zellij-mcp"
+      "command": "/absolute/path/to/zellij-mcp/target/release/zellij-mcp",
+      "args": [],
+      "env": {}
     }
   }
 }
 ```
 
-### OpenCode / Codex / Qwen Code / etc.
+### OpenCode
 
-Same shape — the binary speaks MCP over stdio, takes no flags, and reads no
-config files. Drop the path into the agent's MCP server table.
+Add a local MCP server in `opencode.jsonc`:
 
-## Smoke test
-
-A small Python driver exercises every tool against a real zellij session:
-
-```bash
-# from inside an existing zellij session, or pass --session NAME
-python3 scripts/smoke.py
-python3 scripts/smoke.py --session some-other-session
-python3 scripts/smoke.py --no-mutating-tests   # read-only
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "zellij": {
+      "type": "local",
+      "command": ["/absolute/path/to/zellij-mcp/target/release/zellij-mcp"],
+      "enabled": true
+    }
+  }
+}
 ```
 
-It walks: `initialize` → `tools/list` (verifies all 6 tools and their
-`outputSchema`) → `list-panes` → `spawn-pane` (floating, with `keep_focus_on`)
-→ `read-pane` (verifies the spawned process's output) → `send-text` →
-`focus-pane` round-trip → `kill-pane` → bogus-id error path.
+### Generic MCP Client
 
-## Design notes
+Use stdio transport. The server takes no flags and reads no config file:
 
-### Pane ids must be passed explicitly
+```json
+{
+  "mcpServers": {
+    "zellij": {
+      "type": "stdio",
+      "command": "/absolute/path/to/zellij-mcp/target/release/zellij-mcp",
+      "args": []
+    }
+  }
+}
+```
 
-Every per-pane tool requires `pane_id` — there is no "send to current focus"
-fallback. This is the bug that makes `GitJuhb/zellij-mcp-server` unusable for
-orchestrators: when the agent spawns a background pane and tries to drive it,
-"send to focus" silently writes to whatever pane the human happened to click
-on. Mandatory ids eliminate that class of bug.
+## Orchestration Pattern
 
-### Output is structured JSON, not text blobs
+A robust agent loop is always pane-id-addressed:
 
-Every tool sets `output_schema` via `schemars::schema_for_type::<...>()`, so
-clients can validate responses strictly. The MCP protocol surfaces this as
-`outputSchema` in `tools/list`.
+1. `list-panes` to discover the controller pane, often also available as
+   `$ZELLIJ_PANE_ID`.
+2. `spawn-pane` workers with `keep_focus_on` set to the controller pane.
+3. `read-pane` each worker until it reaches a terminal state.
+4. `send-text` follow-up instructions to specific panes only.
+5. `kill-pane` transient workers when the DAG node is done.
 
-### `keep_focus_on` is the focus-stealing fix
+Here is a metastack-style fan-out / join DAG:
 
-`zellij action new-pane` *always* focuses the newly created pane, and zellij
-0.44.x has no `--no-focus` flag. The server papers over this in `spawn-pane`:
-if the caller passes `keep_focus_on`, the new pane is created and then a
-follow-up `focus-pane-id` restores the caller's seat. The caller's own pane id
-is normally read from `$ZELLIJ_PANE_ID` in the agent's environment.
+```yaml
+root:
+  pane: terminal_7
+  cwd: /home/andy/dev/zellij-mcp
 
-### What is *not* here
+nodes:
+  lint:
+    tool: spawn-pane
+    input:
+      cwd: /home/andy/dev/zellij-mcp
+      command: ["cargo", "clippy", "--all-targets", "--all-features"]
+      keep_focus_on: terminal_7
 
-- No buffer/copy-paste primitives.
-- No layout/tab management.
-- No security policy / allow-list (assume single-user, single-session
-  orchestration).
-- No async command tracking (`execute-command` / `get-command-result`). If
-  agents need exit codes, add them as a 7th/8th tool — they're a clean
-  extension and the bnomei tmux-mcp pattern is a good reference.
+  test:
+    tool: spawn-pane
+    input:
+      cwd: /home/andy/dev/zellij-mcp
+      command: ["cargo", "test"]
+      keep_focus_on: terminal_7
+
+  smoke:
+    tool: spawn-pane
+    input:
+      cwd: /home/andy/dev/zellij-mcp
+      command: ["python3", "scripts/smoke.py", "--no-mutating-tests"]
+      floating: true
+      keep_focus_on: terminal_7
+
+  synthesize:
+    after: [lint, test, smoke]
+    read:
+      - { tool: read-pane, pane_id: "${lint.pane_id}", full: true }
+      - { tool: read-pane, pane_id: "${test.pane_id}", full: true }
+      - { tool: read-pane, pane_id: "${smoke.pane_id}", full: true }
+    reduce:
+      tool: send-text
+      input:
+        pane_id: terminal_7
+        text: "Summarize the three worker panes and propose the next patch."
+        submit: true
+```
+
+The invariant is simple: every edge in the DAG carries a concrete `pane_id`.
+Focus can move, humans can click around, and workers can finish in any order
+without changing where the next tool call goes.
+
+## Smoke Test
+
+A small Python driver exercises the full tool surface against a real zellij
+session:
+
+```bash
+python3 scripts/smoke.py
+python3 scripts/smoke.py --session some-session
+python3 scripts/smoke.py --no-mutating-tests
+```
+
+It walks `initialize`, `tools/list`, `list-panes`, `spawn-pane`,
+`read-pane`, `send-text`, `focus-pane`, `kill-pane`, and a bogus-id error path.
+
+## Notes
+
+`zellij action focus-pane-id` errors loudly for bogus ids, but some zellij CLI
+actions return success for nonexistent pane ids. This MCP forwards zellij's
+behavior rather than hiding it. If your controller needs strict validation,
+call `list-panes` and check the id before mutating.
+
+This server assumes a trusted local user. It can type into terminals and close
+panes by design.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE).

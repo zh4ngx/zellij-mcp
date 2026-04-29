@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 description = "Small MCP server wrapping zellij CLI primitives — 6 pane-id-addressed tools for agent-driven multiplexer control"
 license = "MIT"
-repository = "https://github.com/andy/zellij-mcp"
+repository = "https://github.com/zh4ngx/zellij-mcp"
 
 [[bin]]
 name = "zellij-mcp"
