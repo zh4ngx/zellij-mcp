@@ -1,0 +1,27 @@
+[package]
+name = "zellij-mcp"
+version = "0.1.0"
+edition = "2024"
+description = "Small MCP server wrapping zellij CLI primitives — 6 pane-id-addressed tools for agent-driven multiplexer control"
+license = "MIT"
+repository = "https://github.com/andy/zellij-mcp"
+
+[[bin]]
+name = "zellij-mcp"
+path = "src/main.rs"
+
+[dependencies]
+rmcp = { version = "1.5", default-features = false, features = ["server", "transport-io", "macros", "schemars"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "process", "io-util"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1.0"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt", "std"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
