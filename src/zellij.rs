@@ -95,7 +95,41 @@ pub async fn new_pane(
 pub async fn focus_pane_id(session: Option<&str>, pane_id: &str) -> anyhow::Result<()> {
     let mut cmd = zellij(session);
     cmd.args(["action", "focus-pane-id", pane_id]);
-    run_capturing(cmd, "action focus-pane-id").await?;
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to spawn zellij (action focus-pane-id): {e}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if stderr.contains("already focused") {
+        return Ok(());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Err(anyhow::anyhow!(
+        "zellij action focus-pane-id failed (exit {:?}): {}{}",
+        output.status.code(),
+        stderr,
+        if stderr.is_empty() && !stdout.is_empty() {
+            format!(" / stdout: {stdout}")
+        } else {
+            String::new()
+        }
+    ))
+}
+
+/// `zellij action resize --pane-id <id> <increase|decrease>`.
+pub async fn resize_pane(
+    session: Option<&str>,
+    pane_id: &str,
+    direction: &str,
+) -> anyhow::Result<()> {
+    let mut cmd = zellij(session);
+    cmd.args(["action", "resize", "--pane-id", pane_id, direction]);
+    run_capturing(cmd, "action resize").await?;
     Ok(())
 }
 

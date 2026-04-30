@@ -39,9 +39,11 @@ class way to spawn a background pane while returning focus to the caller.
 
 ## The Seven Tools
 
-All tools accept optional `session`. If omitted, zellij uses the session from
-the inherited zellij environment. `list-sessions` accepts the same shape but
-ignores `session` because zellij session listing is global.
+All tools accept optional `session`. If omitted, zellij uses the current session
+from the inherited zellij environment. Callers that need to auto-detect a
+session name should read `ZELLIJ_SESSION_NAME`; `ZELLIJ` is only a presence
+marker set to `0`. `list-sessions` accepts the same shape but ignores `session`
+because zellij session listing is global.
 
 | Tool | Purpose | Required input | Output |
 | --- | --- | --- | --- |

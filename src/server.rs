@@ -1,10 +1,11 @@
-//! MCP server: 7 tools wrapping zellij CLI primitives.
+//! MCP server: 9 tools wrapping zellij CLI primitives.
 //!
 //! Design rules (lifted from the audit of bnomei/tmux-mcp + GitJuhb/zellij-mcp-server):
 //!  - `pane_id` is REQUIRED on every per-pane tool. No "current focus" fallbacks.
 //!  - `list-panes` returns typed JSON (`output_schema` set on the tool).
 //!  - `spawn-pane` exposes `keep_focus_on` so callers can spawn background panes
 //!    without losing their seat in the foreground pane.
+//!  - `spawn-pane-with-target` anchors a new split at a specific existing pane.
 //!  - Tool descriptions steer the agent toward correct usage.
 
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -31,8 +32,10 @@ pub struct ListSessionsInput {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListPanesInput {
-    /// Optional zellij session name. If omitted, uses the session inherited from
-    /// the parent process's `ZELLIJ` environment, or fails if none exists.
+    /// Optional zellij session name. If omitted, the zellij CLI uses the
+    /// current session from its inherited zellij environment. For caller-side
+    /// session detection, use `ZELLIJ_SESSION_NAME`; `ZELLIJ` is only a
+    /// presence marker.
     pub session: Option<String>,
 }
 
@@ -54,6 +57,9 @@ pub struct SpawnPaneInput {
     /// If set, after spawning, focus is restored to this pane id (e.g. the
     /// caller's own pane). Use this to spawn background panes without losing focus.
     pub keep_focus_on: Option<String>,
+    /// If set, focus this pane before spawning so the new split is anchored next
+    /// to it rather than the current focus.
+    pub target_pane_id: Option<String>,
     /// Optional zellij session name (see list-panes).
     pub session: Option<String>,
 }
@@ -89,6 +95,16 @@ pub struct ReadPaneInput {
 pub struct PaneTargetInput {
     /// Pane ID.
     pub pane_id: String,
+    /// Optional zellij session name.
+    pub session: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ResizePaneInput {
+    /// Pane ID.
+    pub pane_id: String,
+    /// Resize operation. Must be `"increase"` or `"decrease"`.
+    pub direction: String,
     /// Optional zellij session name.
     pub session: Option<String>,
 }
@@ -201,6 +217,56 @@ fn err(msg: impl Into<String>) -> CallToolResult {
     CallToolResult::error(vec![Content::text(msg.into())])
 }
 
+async fn spawn_pane_impl(input: SpawnPaneInput, tool_name: &str) -> CallToolResult {
+    let session = input.session.as_deref();
+    let direction_norm = input.direction.as_deref().map(|d| d.to_lowercase());
+    let direction = direction_norm.as_deref();
+    if let Some(d) = direction
+        && !matches!(d, "right" | "down" | "left" | "up")
+    {
+        return err(format!(
+            "{tool_name}: direction must be one of right|down|left|up, got `{d}`"
+        ));
+    }
+
+    if let Some(target) = input.target_pane_id.as_deref()
+        && let Err(e) = zellij::focus_pane_id(session, target).await
+    {
+        return err(format!(
+            "{tool_name}: focusing target pane `{target}` failed: {e}"
+        ));
+    }
+
+    let pane_id = match zellij::new_pane(
+        session,
+        &input.cwd,
+        direction,
+        input.floating.unwrap_or(false),
+        input.name.as_deref(),
+        input.command.as_deref(),
+    )
+    .await
+    {
+        Ok(id) => id,
+        Err(e) => {
+            if let Some(target) = input.keep_focus_on.as_deref() {
+                let _ = zellij::focus_pane_id(session, target).await;
+            }
+            return err(format!("{tool_name}: {e}"));
+        }
+    };
+
+    if let Some(target) = input.keep_focus_on.as_deref()
+        && let Err(e) = zellij::focus_pane_id(session, target).await
+    {
+        return err(format!(
+            "{tool_name}: pane `{pane_id}` created, but restoring focus to `{target}` failed: {e}"
+        ));
+    }
+
+    structured(&SpawnPaneOutput { pane_id })
+}
+
 #[tool_router]
 impl ZellijMcpServer {
     #[tool(
@@ -262,37 +328,19 @@ impl ZellijMcpServer {
         &self,
         Parameters(input): Parameters<SpawnPaneInput>,
     ) -> Result<CallToolResult, McpError> {
-        let session = input.session.as_deref();
-        let direction_norm = input.direction.as_deref().map(|d| d.to_lowercase());
-        let direction = direction_norm.as_deref();
-        if let Some(d) = direction
-            && !matches!(d, "right" | "down" | "left" | "up")
-        {
-            return Ok(err(format!(
-                "spawn-pane: direction must be one of right|down|left|up, got `{d}`"
-            )));
-        }
-        let pane_id = match zellij::new_pane(
-            session,
-            &input.cwd,
-            direction,
-            input.floating.unwrap_or(false),
-            input.name.as_deref(),
-            input.command.as_deref(),
-        )
-        .await
-        {
-            Ok(id) => id,
-            Err(e) => return Ok(err(format!("spawn-pane: {e}"))),
-        };
-        if let Some(target) = input.keep_focus_on.as_deref()
-            && let Err(e) = zellij::focus_pane_id(session, target).await
-        {
-            return Ok(err(format!(
-                "spawn-pane: pane `{pane_id}` created, but restoring focus to `{target}` failed: {e}"
-            )));
-        }
-        Ok(structured(&SpawnPaneOutput { pane_id }))
+        Ok(spawn_pane_impl(input, "spawn-pane").await)
+    }
+
+    #[tool(
+        name = "spawn-pane-with-target",
+        description = "Spawn a new pane anchored at a specific existing pane. Pass `target_pane_id` to focus that pane before spawning, `direction` for the split direction, and `keep_focus_on` to restore focus after the new pane is created.",
+        output_schema = rmcp::handler::server::common::schema_for_type::<SpawnPaneOutput>()
+    )]
+    async fn spawn_pane_with_target(
+        &self,
+        Parameters(input): Parameters<SpawnPaneInput>,
+    ) -> Result<CallToolResult, McpError> {
+        Ok(spawn_pane_impl(input, "spawn-pane-with-target").await)
     }
 
     #[tool(
@@ -365,6 +413,29 @@ impl ZellijMcpServer {
     }
 
     #[tool(
+        name = "resize-pane",
+        description = "Resize a specific pane by id. `direction` is the resize operation and must be `increase` or `decrease`.",
+        output_schema = rmcp::handler::server::common::schema_for_type::<OkOutput>()
+    )]
+    async fn resize_pane(
+        &self,
+        Parameters(input): Parameters<ResizePaneInput>,
+    ) -> Result<CallToolResult, McpError> {
+        let session = input.session.as_deref();
+        let direction = input.direction.to_lowercase();
+        if !matches!(direction.as_str(), "increase" | "decrease") {
+            return Ok(err(format!(
+                "resize-pane: direction must be `increase` or `decrease`, got `{}`",
+                input.direction
+            )));
+        }
+        match zellij::resize_pane(session, &input.pane_id, &direction).await {
+            Ok(()) => Ok(structured(&OkOutput { ok: true })),
+            Err(e) => Ok(err(format!("resize-pane: {e}"))),
+        }
+    }
+
+    #[tool(
         name = "kill-pane",
         description = "Close a specific pane by id. Permanent — the pane and its running command are terminated.",
         annotations(destructive_hint = true),
@@ -396,7 +467,8 @@ impl ServerHandler for ZellijMcpServer {
              ALWAYS pass an explicit pane_id; this server has no 'send to current focus' \
              shortcut by design. To spawn a background pane without losing focus, call \
              spawn-pane with keep_focus_on set to your own pane id (read it from the \
-             ZELLIJ_PANE_ID env)."
+             ZELLIJ_PANE_ID env). To anchor a split next to an existing pane, pass \
+             target_pane_id or use spawn-pane-with-target."
                     .to_string(),
             )
     }

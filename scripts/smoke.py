@@ -9,7 +9,8 @@ Usage:
     python3 scripts/smoke.py [--binary PATH] [--session NAME]
 
 If --session is provided, all tool calls scope to that zellij session. If
-omitted, the script discovers the current session from `zellij list-sessions`.
+omitted, the script discovers the current session from `ZELLIJ_SESSION_NAME`,
+then falls back to the `(current)` marker in `zellij list-sessions -n`.
 """
 
 from __future__ import annotations
@@ -111,6 +112,22 @@ def find_text_payload(call_result: dict) -> str:
     return ""
 
 
+def discover_current_session() -> str | None:
+    session = os.environ.get("ZELLIJ_SESSION_NAME")
+    if session:
+        return session
+
+    out = subprocess.check_output(["zellij", "list-sessions", "-n"], text=True)
+    for line in out.splitlines():
+        if "(current)" not in line:
+            continue
+        name, _, _ = line.partition(" [Created")
+        name = name.strip()
+        if name:
+            return name
+    return None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--binary", default=str(DEFAULT_BIN))
@@ -137,10 +154,8 @@ def main() -> int:
 
     if args.session is None:
         try:
-            out = subprocess.check_output(["zellij", "list-sessions", "-s"], text=True)
-            sessions = [s for s in out.strip().splitlines() if s]
-            if sessions:
-                args.session = sessions[0]
+            args.session = discover_current_session()
+            if args.session:
                 print(f"(auto) using session: {args.session}")
         except Exception as e:
             print(f"could not discover session: {e}", file=sys.stderr)
