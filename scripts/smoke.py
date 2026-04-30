@@ -169,7 +169,7 @@ def main() -> int:
         cli.notify("notifications/initialized")
 
         # ----------------------------------------------------------------
-        # 2. tools/list — confirm 6 tools with output schemas
+        # 2. tools/list — confirm 7 tools with output schemas
         # ----------------------------------------------------------------
         def _list_tools():
             r = cli.request("tools/list")
@@ -178,7 +178,15 @@ def main() -> int:
             names = sorted(t["name"] for t in tools)
             print(f"tools ({len(tools)}): {names}")
             expected = sorted(
-                ["list-panes", "spawn-pane", "send-text", "read-pane", "focus-pane", "kill-pane"]
+                [
+                    "list-sessions",
+                    "list-panes",
+                    "spawn-pane",
+                    "send-text",
+                    "read-pane",
+                    "focus-pane",
+                    "kill-pane",
+                ]
             )
             assert names == expected, f"expected {expected}, got {names}"
             for t in tools:
@@ -189,7 +197,28 @@ def main() -> int:
         step("tools/list", _list_tools)
 
         # ----------------------------------------------------------------
-        # 3. list-panes
+        # 3. list-sessions
+        # ----------------------------------------------------------------
+        def _list_sessions():
+            r = cli.request("tools/call", {"name": "list-sessions", "arguments": {}})
+            res = expect_no_error(r, "list-sessions")
+            if res.get("isError"):
+                raise RuntimeError(f"tool reported error: {res}")
+            sessions = res.get("structuredContent")
+            if sessions is None:
+                sessions = json.loads(find_text_payload(res))
+            print(f"sessions: {len(sessions)}")
+            for s in sessions[:6]:
+                print(
+                    f"  {s['name']:20s} age={s['created_age_seconds']}s "
+                    f"attached={s['is_attached']} exited={s['is_exited']}"
+                )
+            return sessions
+
+        step("list-sessions", _list_sessions)
+
+        # ----------------------------------------------------------------
+        # 4. list-panes
         # ----------------------------------------------------------------
         def _list_panes():
             params = {"name": "list-panes", "arguments": {}}

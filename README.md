@@ -3,9 +3,10 @@
 Reliable pane fabric for AI agents.
 
 `zellij-mcp` is a small Rust [Model Context Protocol][mcp] server that wraps
-the [zellij][zellij] CLI with six pane-id-addressed tools. It gives an agent the
-minimum surface needed to fan out work into terminal panes, read results, route
-follow-up input, and clean up without stealing the user's focus.
+the [zellij][zellij] CLI with session discovery and pane-id-addressed tools. It
+gives an agent the minimum surface needed to fan out work into terminal panes,
+read results, route follow-up input, and clean up without stealing the user's
+focus.
 
 [mcp]: https://modelcontextprotocol.io
 [zellij]: https://zellij.dev
@@ -30,19 +31,21 @@ class way to spawn a background pane while returning focus to the caller.
 - **No current-focus fallback** exists anywhere in the server.
 - **`keep_focus_on` is first class** on `spawn-pane`.
 - **Every tool returns structured JSON** with an MCP `outputSchema`.
-- **Only six tools** are exposed, because six is enough to build reliable pane
-  orchestration.
+- **Only seven tools** are exposed: session discovery plus the pane primitives
+  needed for reliable orchestration.
 
 [gitjuhb]: https://github.com/GitJuhb/zellij-mcp-server
 [bnomei]: https://github.com/bnomei/tmux-mcp
 
-## The Six Tools
+## The Seven Tools
 
 All tools accept optional `session`. If omitted, zellij uses the session from
-the inherited zellij environment.
+the inherited zellij environment. `list-sessions` accepts the same shape but
+ignores `session` because zellij session listing is global.
 
 | Tool | Purpose | Required input | Output |
 | --- | --- | --- | --- |
+| `list-sessions` | Discover zellij sessions as typed JSON | none | `[{ name, created_age_seconds, ... }]` |
 | `list-panes` | Discover panes as typed JSON | none | `{ panes: [...] }` |
 | `spawn-pane` | Create a split or floating pane | `cwd` | `{ pane_id }` |
 | `send-text` | Type into a specific pane | `pane_id`, `text` | `{ ok }` |
@@ -142,14 +145,15 @@ Use stdio transport. The server takes no flags and reads no config file:
 
 ## Orchestration Pattern
 
-A robust agent loop is always pane-id-addressed:
+A robust agent loop is session-aware and pane-id-addressed:
 
-1. `list-panes` to discover the controller pane, often also available as
+1. `list-sessions` when the target session name is not already known.
+2. `list-panes` to discover the controller pane, often also available as
    `$ZELLIJ_PANE_ID`.
-2. `spawn-pane` workers with `keep_focus_on` set to the controller pane.
-3. `read-pane` each worker until it reaches a terminal state.
-4. `send-text` follow-up instructions to specific panes only.
-5. `kill-pane` transient workers when the DAG node is done.
+3. `spawn-pane` workers with `keep_focus_on` set to the controller pane.
+4. `read-pane` each worker until it reaches a terminal state.
+5. `send-text` follow-up instructions to specific panes only.
+6. `kill-pane` transient workers when the DAG node is done.
 
 Here is a metastack-style fan-out / join DAG:
 
@@ -210,7 +214,7 @@ python3 scripts/smoke.py --session some-session
 python3 scripts/smoke.py --no-mutating-tests
 ```
 
-It walks `initialize`, `tools/list`, `list-panes`, `spawn-pane`,
+It walks `initialize`, `tools/list`, `list-sessions`, `list-panes`, `spawn-pane`,
 `read-pane`, `send-text`, `focus-pane`, `kill-pane`, and a bogus-id error path.
 
 ## Notes

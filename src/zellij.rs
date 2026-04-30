@@ -17,9 +17,10 @@ fn zellij(session: Option<&str>) -> Command {
 }
 
 async fn run_capturing(mut cmd: Command, ctx: &str) -> anyhow::Result<String> {
-    let output = cmd.output().await.map_err(|e| {
-        anyhow::anyhow!("failed to spawn zellij ({ctx}): {e}")
-    })?;
+    let output = cmd
+        .output()
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to spawn zellij ({ctx}): {e}"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -42,6 +43,13 @@ pub async fn list_panes_json(session: Option<&str>) -> anyhow::Result<String> {
     let mut cmd = zellij(session);
     cmd.args(["action", "list-panes", "-j", "-a"]);
     run_capturing(cmd, "action list-panes").await
+}
+
+/// `zellij list-sessions -n` — returns raw, no-format session text.
+pub async fn list_sessions() -> anyhow::Result<String> {
+    let mut cmd = zellij(None);
+    cmd.args(["list-sessions", "-n"]);
+    run_capturing(cmd, "list-sessions").await
 }
 
 /// `zellij action new-pane [--cwd ...] [-d <dir>] [--floating] [--name <n>] [-- cmd...]`
@@ -67,12 +75,12 @@ pub async fn new_pane(
     if let Some(n) = name {
         cmd.arg("--name").arg(n);
     }
-    if let Some(argv) = command {
-        if !argv.is_empty() {
-            cmd.arg("--");
-            for a in argv {
-                cmd.arg(a);
-            }
+    if let Some(argv) = command
+        && !argv.is_empty()
+    {
+        cmd.arg("--");
+        for a in argv {
+            cmd.arg(a);
         }
     }
     let stdout = run_capturing(cmd, "action new-pane").await?;
@@ -102,13 +110,7 @@ pub async fn write_chars(session: Option<&str>, pane_id: &str, text: &str) -> an
 /// `zellij action write --pane-id <id> <byte>` — send a single byte (e.g. 13 = CR).
 pub async fn write_byte(session: Option<&str>, pane_id: &str, byte: u8) -> anyhow::Result<()> {
     let mut cmd = zellij(session);
-    cmd.args([
-        "action",
-        "write",
-        "--pane-id",
-        pane_id,
-        &byte.to_string(),
-    ]);
+    cmd.args(["action", "write", "--pane-id", pane_id, &byte.to_string()]);
     run_capturing(cmd, "action write").await?;
     Ok(())
 }

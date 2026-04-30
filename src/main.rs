@@ -1,7 +1,7 @@
 //! zellij-mcp: small MCP server wrapping the zellij CLI.
 //!
-//! Exposes six tools (`list-panes`, `spawn-pane`, `send-text`, `read-pane`,
-//! `focus-pane`, `kill-pane`), all addressing panes by zellij's stable
+//! Exposes seven tools (`list-sessions`, `list-panes`, `spawn-pane`,
+//! `send-text`, `read-pane`, `focus-pane`, `kill-pane`), all addressing panes by zellij's stable
 //! `terminal_<n>` / `plugin_<n>` IDs. Designed for agents that orchestrate
 //! background panes without disturbing user focus.
 
