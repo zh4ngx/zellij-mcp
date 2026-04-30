@@ -1,6 +1,6 @@
 [package]
 name = "zellij-mcp"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "Small MCP server wrapping zellij CLI primitives for agent-driven multiplexer control"
 license = "MIT"
