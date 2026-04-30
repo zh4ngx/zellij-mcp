@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.3.1
+
+- Fixed immediate `spawn-pane` -> `resize-pane` failure by verifying that `spawn-pane`'s returned pane id appears in `list-panes` before exposing it. Root cause: zellij 0.44.1 can return a `terminal_N` id for directed non-floating splits in detached sessions without actually inserting an addressable pane, so subsequent pane-id actions (resize, send-text, focus, kill) all fail with "Pane with id Terminal(N) not found".
+- When a directed `spawn-pane` returns a phantom id, retry the spawn without `--direction` and return the materialized pane id. This preserves a usable pane for follow-up pane-id tools in the affected detached-session path.
+- Defense-in-depth: `resize-pane` also retries on the transient "not found" error string in case the spawn-verification path ever misses an edge case.
+- Extended `scripts/smoke.py` to cover the no-delay spawn → resize sequence and updated the expected v0.3 tool list.
+
 ## v0.3.0
 
 - Added the `resize-pane` MCP tool, wrapping `zellij action resize` with `direction: "increase" | "decrease"`. Useful when programmatic pane spawning needs post-spawn ratio adjustment.

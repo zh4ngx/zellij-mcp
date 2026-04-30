@@ -184,7 +184,7 @@ def main() -> int:
         cli.notify("notifications/initialized")
 
         # ----------------------------------------------------------------
-        # 2. tools/list — confirm 7 tools with output schemas
+        # 2. tools/list — confirm v0.3 tool surface with output schemas
         # ----------------------------------------------------------------
         def _list_tools():
             r = cli.request("tools/list")
@@ -199,8 +199,10 @@ def main() -> int:
                     "spawn-pane",
                     "send-text",
                     "read-pane",
+                    "resize-pane",
                     "focus-pane",
                     "kill-pane",
+                    "spawn-pane-with-target",
                 ]
             )
             assert names == expected, f"expected {expected}, got {names}"
@@ -222,6 +224,8 @@ def main() -> int:
             sessions = res.get("structuredContent")
             if sessions is None:
                 sessions = json.loads(find_text_payload(res))
+            if isinstance(sessions, dict):
+                sessions = sessions.get("sessions", [])
             print(f"sessions: {len(sessions)}")
             for s in sessions[:6]:
                 print(
@@ -260,7 +264,7 @@ def main() -> int:
             print("\n(skipping mutating tests per --no-mutating-tests)")
         else:
             # ------------------------------------------------------------
-            # 4. spawn-pane (with keep_focus_on)
+            # 5. spawn-pane (with keep_focus_on)
             # ------------------------------------------------------------
             def _spawn():
                 arguments = {
@@ -285,10 +289,31 @@ def main() -> int:
                 return pid
 
             spawned_pane = step("spawn-pane", _spawn)
+
+            # ------------------------------------------------------------
+            # 6. resize-pane immediately after spawn, with no settling sleep.
+            # This catches zellij's transient "Pane with id Terminal(N) not
+            # found" race between new-pane returning and resize lookup.
+            # ------------------------------------------------------------
+            def _resize_immediate():
+                arguments = {"pane_id": spawned_pane, "direction": "increase"}
+                if args.session:
+                    arguments["session"] = args.session
+                r = cli.request(
+                    "tools/call", {"name": "resize-pane", "arguments": arguments}
+                )
+                res = expect_no_error(r, "resize-pane")
+                if res.get("isError"):
+                    raise RuntimeError(f"tool reported error: {res}")
+                sc = res.get("structuredContent") or json.loads(find_text_payload(res))
+                assert sc.get("ok") is True
+                return sc
+
+            step("resize-pane (immediate after spawn)", _resize_immediate)
             time.sleep(0.6)  # let the pane render
 
             # ------------------------------------------------------------
-            # 5. read-pane (verify the spawned pane shows our echo)
+            # 7. read-pane (verify the spawned pane shows our echo)
             # ------------------------------------------------------------
             def _read():
                 arguments = {"pane_id": spawned_pane, "full": True}
@@ -313,7 +338,7 @@ def main() -> int:
             step("read-pane (after spawn)", _read)
 
             # ------------------------------------------------------------
-            # 6. send-text (without submit)
+            # 8. send-text (without submit)
             # ------------------------------------------------------------
             def _send_no_submit():
                 arguments = {
@@ -336,7 +361,7 @@ def main() -> int:
             step("send-text (submit=false)", _send_no_submit)
 
             # ------------------------------------------------------------
-            # 7. focus-pane (focus the spawned pane, then back)
+            # 9. focus-pane (focus the spawned pane, then back)
             # ------------------------------------------------------------
             def _focus_back_and_forth():
                 if not args.keep_focus_on:
@@ -370,7 +395,7 @@ def main() -> int:
             step("focus-pane (round-trip)", _focus_back_and_forth)
 
             # ------------------------------------------------------------
-            # 8. kill-pane (cleanup)
+            # 10. kill-pane (cleanup)
             # ------------------------------------------------------------
             def _kill():
                 arguments = {"pane_id": spawned_pane}
@@ -387,7 +412,7 @@ def main() -> int:
             spawned_pane = None  # mark cleaned
 
             # ------------------------------------------------------------
-            # 9. error path: focus-pane to bogus pane id (zellij errors here;
+            # 11. error path: focus-pane to bogus pane id (zellij errors here;
             # note that write-chars/close-pane/dump-screen silently succeed
             # for nonexistent ids — a zellij CLI quirk we don't paper over).
             # ------------------------------------------------------------
